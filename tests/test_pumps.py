@@ -1,6 +1,7 @@
 ﻿from datetime import datetime, timezone
 import allure
 import pytest
+from pydantic import TypeAdapter
 
 from src.api_client import PumpsApiClient
 from src.models import (
@@ -12,6 +13,8 @@ from src.models import (
     PumpStateResponse,
     ResetBlockResponse,
 )
+
+AlertListAdapter = TypeAdapter(list[AlertResponse])
 
 
 @allure.epic("Insulin Pump Simulator API")
@@ -45,12 +48,7 @@ class TestPumpsAPI:
             f"получен {response.status_code}: {response.text}"
         )
 
-        raw_alerts = response.json()
-        assert isinstance(raw_alerts, list), (
-            f"Ожидался список оповещений (list), получен {type(raw_alerts).__name__}: {raw_alerts}"
-        )
-        alerts = [AlertResponse.model_validate(item) for item in raw_alerts]
-        assert len(alerts) == len(raw_alerts), "Не все элементы списка соответствуют схеме AlertResponse"
+        AlertListAdapter.validate_python(response.json())
 
     @allure.story("Оповещения помпы")
     @allure.title("DELETE /alerts: удаление оповещения с уровнем {level}")
@@ -81,12 +79,8 @@ class TestPumpsAPI:
             f"Ожидался статус 200 при удалении оповещения уровня '{level.value}', "
             f"получен {response.status_code}: {response.text}"
         )
-        raw_alerts = response.json()
-        assert isinstance(raw_alerts, list), (
-            f"Ожидался список в ответе DELETE /alerts, получен {type(raw_alerts).__name__}"
-        )
-        for item in raw_alerts:
-            AlertResponse.model_validate(item)
+
+        AlertListAdapter.validate_python(response.json())
 
     @allure.story("Оповещения помпы")
     @allure.title("DELETE /alerts/all: удаление всех оповещений помпы")
@@ -98,12 +92,8 @@ class TestPumpsAPI:
             f"Ожидался статус 200 при удалении всех оповещений помпы '{pump_id}', "
             f"получен {response.status_code}: {response.text}"
         )
-        raw_alerts = response.json()
-        assert isinstance(raw_alerts, list), (
-            f"Ожидался список оповещений, получен {type(raw_alerts).__name__}"
-        )
-        for item in raw_alerts:
-            AlertResponse.model_validate(item)
+
+        AlertListAdapter.validate_python(response.json())
 
     @allure.story("Управление болюсом")
     @allure.title("POST /bolus/deliver: запрос подачи болюса")
@@ -120,22 +110,21 @@ class TestPumpsAPI:
         assert result.message.strip() != "", "Поле 'message' в ответе bolus/deliver не должно быть пустым"
 
     @allure.story("Управление блокировкой")
-    @allure.title("POST /block/reset: попытка сброса блокировки помпы")
+    @allure.title("POST /block/reset: запрет сброса блокировки для незаблокированной помпы")
     @allure.severity(allure.severity_level.CRITICAL)
-    def test_reset_block_returns_valid_response(self, api_client: PumpsApiClient, pump_id: str) -> None:
+    def test_reset_block_when_not_blocked(self, api_client: PumpsApiClient, pump_id: str) -> None:
         response = api_client.reset_block(pump_id)
 
-        assert response.status_code in (200, 403), (
-            f"Ожидался статус 200 или 403 при сбросе блокировки для '{pump_id}', "
+        assert response.status_code == 403, (
+            f"Ожидался статус 403 при попытке сброса блокировки незаблокированной помпы '{pump_id}', "
             f"получен {response.status_code}: {response.text}"
         )
         result = ResetBlockResponse.model_validate(response.json())
-        assert result.status.strip() != "", "Поле 'status' в ответе block/reset не должно быть пустым"
+        assert result.status == "FAILED", (
+            f"Ожидался status='FAILED', получен '{result.status}'"
+        )
         assert result.message.strip() != "", "Поле 'message' в ответе block/reset не должно быть пустым"
-        if response.status_code == 403:
-            assert result.status == "FAILED", (
-                f"При статусе 403 ожидался status='FAILED', получен '{result.status}'"
-            )
+
     @allure.story("Негативные сценарии и валидация")
     @allure.title("DELETE /alerts: ошибка 422 при невалидном теле запроса ({case_name})")
     @allure.severity(allure.severity_level.NORMAL)
